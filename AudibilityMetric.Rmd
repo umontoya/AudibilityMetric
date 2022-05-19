@@ -1,0 +1,382 @@
+---
+title: "Méthode d'évaluation de l'audibilité d'un système d'alerte en Saint-Martin-de-Londres"
+author: "Jonathan Siliézar"
+date: "21/04/2022"
+output:
+  rmdformats::downcute:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+En France, les sirènes de sécurité civile du Système d’Alerte et d’Information des Population (SAIP) sont utilisées par les autorités pour signaler une menace imminente ou en cours. Même si l’on connaît leur niveau sonore, il est néanmoins difficile d’évaluer leur audibilité, notamment en milieu urbain à cause du masquage par des sources sonores secondaires. Un protocole expérimental a été déployé autour d’une sirène standard installée sur la commune de Saint-Martin-de-Londres (Hérault) en collaboration avec un groupe d’étudiants de géographie et le Laboratoire de Géographie et d’Aménagement de Montpellier (LAGAM - Université Paul Valéry Montpellier 3).
+Des mesures de niveau sonore pendant l’activation de la source ont été prises grâce à l’application NoiseCapture à
+différentes distances et sur plusieurs axes par les étudiants. Il ont aussi été invités à remplir un questionnaire sur des informations perceptives de la sirène comme son audibilité, le niveau sonore perçu ou le masquage de la sirène par le passage de véhicules. Une étape de simulation de l’environnement sonore à l’aide du logiciel NoiseModelling a également été réalisée pour comparer les résultats mesurés avec les résultats simulés. Les résultats de l’étude valident l’utilisation de l’outil NoiseModelling pour simuler l’audibilité du signal sonore dans un rayon de 2,8 kilomètres autour de la sirène.
+
+Ce document présent les étapes et résultats obtenus de cette expérience ainsi qu'une analyse sur la pertinence de cette approche. 
+
+## Set working directory and libraries
+On commence par definir le repertoire où on va trouver nos données ainsi que les libraries à utiliser
+
+```{r, message=FALSE, warning=FALSE,results='hide'}
+setwd("C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/Methode Audibilite")
+
+dir <- paste(getwd(),"/Data/",sep="") #Directoire data
+dirLay <- paste(getwd(),"/Donnees/Input/",sep="") #Directoire layers
+dirExport <- paste(getwd(),"/Donnees/Output/",sep="") #Directoire exports
+dirMedia <- paste(getwd(),"/Doc/",sep="") #Directoire media
+dirzip <- paste(getwd(),"/Data/unzip/",sep="")
+dir.create(dirzip)
+
+library(rgdal)
+library(dplyr)
+library(rgeos)
+library(sf)
+library(dplyr)
+library(devtools)
+library(leaflet)
+library(jsonlite)
+library(ggplot2)
+library(scales)
+library(cowplot)
+library(tidyverse)
+library(ggpmisc)
+library(plotly)
+library(geojsonR)
+library(ggrepel)
+library(tidyr)
+library(raster)
+library(data.table)
+library(corrplot)
+
+```
+
+## Importation des mesures NoiseCapture
+Les mesures réalisées à l'aide de __NoiseCapture__ peuvent être récuperées en utilisant les identifiants obtenus lors de la mesure sur [RAW NoiseCapture](https://data.noise-planet.org/raw/) 
+
+> __NoiseCapture__ is a free and open-source Android application that allows users to measure and share the noise environment. Each noise measure is combined with its GPS track so that the result can be displayed in an interactive maps within the application or the website.
+
+## Extraction des données de mesure
+
+Une fois tous les mesures ont été récuperées du site __NoiseCapture__, on extrait les niveaux sonores associés à chaque point et on les filtre sur une plage du temps entre 12h15:00 et 12h16:30 (Temps d'activation de la sirène). On peut en extraire les informations d'émission par tiers d'octave ainsi que sa localisation dans la zone d'étude. 
+
+```{r warning=FALSE, , message=FALSE, results='hide'}
+list_zip <- list.files(path = dir, pattern = "\\.zip$", all.files = FALSE, full.names = FALSE, recursive = FALSE,ignore.case = FALSE, include.dirs = FALSE, no.. = FALSE)
+xynew<-NA
+dfnew<-NA
+k <- 1
+
+for(l in list_zip){
+  
+  unzip(paste(dir,l,sep=""), exdir= "unzip")
+  dirgeojson <- paste(dirzip,"track.geojson",sep="")
+  
+  datajson <-jsonlite::read_json(dirgeojson, simplifyVector = TRUE)
+  if (length(datajson$features)>0){
+    
+    if (nrow(datajson$features$properties)>1){
+      data <- datajson$features$properties %>% as.data.frame(.)
+      geom <- datajson$features$geometry %>% as.data.frame(.) %>% .$coordinates
+      
+      geom[sapply(geom, is.null)] <- NA
+      
+      data$x <- unlist(lapply(geom,function(x) x[1]))
+      data$y <- unlist(lapply(geom,function(x) x[2]))
+      
+      data <- type.convert(data)
+      data <- data[c("leq_utc","leq_100", "leq_125", "leq_160","leq_200", "leq_250", "leq_315","leq_400", "leq_500","leq_630","leq_800", "leq_1000", "leq_1250","leq_1600", "leq_2000", "leq_2500","leq_3150", "leq_4000", "leq_5000","leq_6300", "leq_8000","leq_10000","leq_12500","leq_16000", "x","y")]
+      
+      final <- as.data.frame(data[1:(nrow(data)),1:24],col.names =c("x","y"))
+      final$track <- l
+      xy <-  as.data.frame(data[1:(nrow(data)),25:26],col.names =c("x","y"))
+      df <- final
+      if (length(dfnew)==1){
+        dfnew <- df
+      }else{
+        dfnew <- rbind(df, dfnew)
+      }
+      xynew <- rbind(xy, xynew)
+      
+      
+    }
+  }
+  
+}
+
+
+xynew_wthNa <- xynew[-which(is.na(xynew)),] 
+dfnew_wthNa <- dfnew[-which(is.na(xynew)),] 
+
+group_df <- dfnew_wthNa
+group_df <- group_df%>% group_by(track)
+
+# Load dataset from github
+
+group_df$date <- as.POSIXct(dfnew_wthNa$leq_utc/1000,origin = '1970-01-01')
+
+min <-  as.POSIXct("2021-10-06 10:15:00", tz="UTC") 
+max <-  as.POSIXct("2021-10-06 10:16:30", tz="UTC")
+
+filt_df<-filter(group_df, date >= min & date <= max)
+cut_list <- filt_df$track
+
+```
+
+# Traitement
+
+## Visualization des séries temporelles
+
+On va s'intéresser aux séries temporelles sur la bande de fréquence 400[Hz] (Bande la plus saillante au moment de l'activation de la sirène). Dans un deuxième temps on s'intéresse aux séries temporelles sur 400[Hz]-315[Hz] considérant que tout ce qui en dessous de 400[Hz] appartient au bruit du fond. En gros, on vise à "extraire" que l'information spectrale de la sirène. On va obtenir une répresentation visuelle de ce type:
+
+![Séries temporelles](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/SeriesTemp.png)
+
+![Grid Séries temporelles](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/SeriesTempGrid.jpg)
+
+
+## Traitement des points NoiseCapture
+
+Dans cette étape l'intérêt c'est de générer une couche __Shapefile__ (.shp) qu'on puisse visualizer directement sur R ou sur n'importe quel logiciel GIS comme __QGIS__
+
+> Format shapefile: SHP is the file extension for one of the primary file types used for representation of ESRI Shapefile. It represents Geospatial information in the form of vector data to be used by Geographic Information Systems (GIS) applications. The format has been developed as open specifications in order to facilitate interoperability between ESRI and other software products.
+
+> QGIS: QGIS est un Système d’Information Géographique (SIG) convivial distribué sous licence publique générale GNU. C’est un projet officiel de la fondation Open Source Geospatial (OSGeo). Il est compatible avec Linux, Unix, Mac OS X, Windows et Android et intègre de nombreux formats vecteur, raster, base de données et fonctionnalités.
+
+On obtiendra une couche .shp du type __SimpleFeatures__ projeté en EPSG:4326-WGS 84 avec toutes les informations liées aux niveaux sonores par tiers d'octave plus un identifiant unique (PK) pour chacun des points. Ceci nous sera utile lorsqu'on voudrais analyser un point en particulier.
+
+> SimpleFeatures: Simple features or simple feature access refers to a formal standard (ISO 19125-1:2004) that describes how objects in the real world can be represented in computers, with emphasis on the spatial geometry of these objects. It also describes how such objects can be stored in and retrieved from databases, and which geometrical operations should be defined for them.
+
+# Etape de simulation NoiseModelling 
+Le calcul de propagation acoustique dans la zone d’étude est réalisé à l’aide de NoiseModelling, un logiciel libre conçu
+pour produire des cartes de bruit sur de très grandes zones urbaines. Le logiciel intègre le modèle CNOSSOS-EU pour l’émission et la propagation du son. Il utilise une connexion à une base de données spatiale
+de type H2GIS pour permettre la manipulation d'un grand nombre de données spatiales.
+
+>IntelliJ IDEA est un IDE intelligent et tenant compte du contexte qui permet de travailler sur toutes sortes d'applications en Java et dans d'autres langages de la JVM tels que Kotlin, Scala et Groovy. IntelliJ IDEA peut être complété par des plugins gratuits développés par JetBrains afin de pouvoir travailler avec d'autres langages de programmation, parmi lesquels Go, Python, SQL, Ruby et PHP.
+
+NoiseModelling permet d’intégrer des éléments de l’environnement sonore à l’étape de simulation (Météorologie, probabilité d’occurrences favorables, usage du sol, coefficient d’absorption du sol G, etc.). Nous avons donc paramétré 8 types de configurations différentes afin de trouver celle qui donnait les meilleurs résultats. La simulation a été lancée plusieurs fois en faisant varier le niveau de complexité des paramètres d’entrée. Finalement, nous avons gardé la dernière configuration en se basant sur la corrélation entre la simulation et les niveaux sonores mesurés. 
+
+![Configurations](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/Media/Configs/Configs.gif)
+
+À l'issue de cette étape on obtient une couche .shp avec les niveaux sonores estimés sur la grille de points récepteurs générée auparavant. Cette couche nous permettra de réaliser une analyse croisée entre nos 3 jeu de données disponibles : Simulation, mesure et perception.
+
+![Configuration 8](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/Intellij.jpg)
+
+>Latest version can be found here: [Github Repository](https://github.com/pierromond/gradle_run)
+
+# Pre-analyse 
+## Importation des couches GIS [.shp]
+On utilise 3 couches différentes:
+  
+1. RCVS : Points recépteurs à utiliser sur NoiseModelling (Même localisation que points mesurés). Couche générée sur QGIS ;
+2. NC : Points de mesure NoiseCapture sur la zone d'étude ;
+3. C8 : Configuration 8 simulée sur NoiseModelling. Elle contient les valeurs simulées sur la couche des recépteurs RCVS (20 ou 10000 points).
+
+
+```{r , message=FALSE, warning=FALSE, results='hide'}
+RCVS <- st_read(paste(dirLay,"RCVS20.shp",sep = ""))
+NC <- st_read(paste(dirLay,"NC_Man.shp",sep = ""))
+C8 <- st_read(paste(dirExport,"C8.shp",sep = ""))
+```
+    
+Une fois les couches à utiliser sont importées, on va définir quelques fonctions pour les traiter. Ceci nous permettra d'une part de réaliser une analyse de corrélation entre les résultats et d'autre part de générer une métrique pour l'analyse de l'audibilité dans la zone d'étude. On appelera cette métrique __Proportion d'audibilité__ 
+
+> Proportion d'audibilité: Nous proposons l'utilisation des courbes de proportion d'audibilité pour évaluer et cartographier l'audibilité dans une zone d'étude. Ces courbes permettent de lier un pourcentage des participants entendant la sirène à un intervalle de niveau sonore, en conséquent nous pouvons predire le niveau d'audibilité de la sirène en se basant sur les niveaux sonores affiches par la cartographie sonore. 
+
+
+```{r , message=FALSE, warning=FALSE, results='hide'}
+# mat : matrice de donnée
+# ... : Arguments supplémentaire à passer à la fonction cor.test
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+
+#Function pour d?couper en tranches NS
+Cut_the_ColumName<- function(mindB, maxdB, binwidth, data, with_quantile=F, nb_slices,columName ){
+  if(with_quantile){
+    interval_bounds <-  quantile(data[,columName], probs = seq(0,1, length.out=nb_slices+1))
+    dbgroup <- cut(data[,columName], breaks = interval_bounds,  right=F, include.lowest=T ,  labels = seq(1,length(interval_bounds)-1))
+    #return(mindB+0.5*binwidth+(as.numeric(dbgroup)-1)*binwidth)
+    return(interval_bounds[as.numeric(dbgroup)])
+  }
+  else{
+    interval_bounds <- c( seq(mindB,maxdB, by= binwidth), Inf)
+    labels_quali <- seq(1, length(interval_bounds) - 1 )
+    dbgroup <- cut(data[,columName], breaks = interval_bounds,  right=F, include.lowest=T, labels = labels_quali)
+    return(mindB+0.5*binwidth+(as.numeric(dbgroup)-1)*binwidth)
+  }
+}
+
+#Function Proportion par seuil Audibilite
+proportionParSeuil <- function(SeuilAudi,SelData, niv){
+  SelDataExp <- SelData %>% group_by(dbgroup) %>% summarize(number=n()) #Nombre des observations par dbgroup
+  SelDataExp3 <- SelData %>% filter(AUDIB >= SeuilAudi) %>% group_by(dbgroup) %>% summarize(number=n()) #Nombre des observations >=3 par dbgroup
+
+  SelData3 <- left_join(SelDataExp, SelDataExp3, by = 'dbgroup') %>% mutate(prop = number.y/number.x) #Merge et calculer la proportion entre les 2
+  SelData3$prop <- round(SelData3$prop,digits=2) #Round to 2 digits
+
+  SelData3$AudiSeuil <- SeuilAudi
+  SelData3 <- SelData3 %>% mutate(niveauAudibilite = niv)
+  return (SelData3)
+}
+```
+
+## Constitution de base de données
+
+Nous allons ensuite constituer un dataframe avec C8 et les données perceptives :
+
+```{r , message=FALSE, warning=FALSE, results='hide'}
+Simu <- st_read(paste(dirExport,"C8.shp",sep = "")) %>% mutate(HZ500=replace(HZ500, which(HZ500 < 20), 20))%>% mutate("C8" = HZ500) %>% dplyr::select( IDRECEIVER,C8)
+Simu_SM <- Simu
+
+#Merge des tables pour avoir infos de points plus simulation ensemble
+RCVS_NC <- merge(RCVS %>% as.data.frame(), NC %>% as.data.frame(),by.x = "PK", by.y = "Col_PK", all = TRUE) %>% filter(!is.na(l400_man))
+RCVS_NC$leqDiff400315 <-RCVS_NC$leq_400- RCVS_NC$leq_315
+RCVS_NC$leqDiff500400 <-RCVS_NC$leq_500- RCVS_NC$leq_400
+AllData_SM <- merge(Simu_SM,RCVS_NC, by.x ="IDRECEIVER", by.y="PK")
+AllData_df_SM <- as.data.frame(AllData_SM) %>% dplyr::select(where(is.numeric)) %>%
+  dplyr::select(NS_Percu, Audi_Sir,
+                starts_with("C"),
+                distance,
+                Masq_Vehi, NS_Bruit ,
+                leq_315,  leq_400 , leq_500,  leq_630,leqDiff400315,leqDiff500400,
+                l400_man)
+AllData_df_SM$AUDIB <- AllData_df_SM$Audi_Sir
+
+```
+
+Dans ce dataframe nous avons accès aux niveaux sonores issus de la simulation ainsi que des valeurs perceptives. Ceci nous permettra de rendre l'étape d'analyse plus simple pour la suite
+
+# Analyse 
+
+## NoiseCapture vs NoiseModelling
+Dans un premier temps nous regardons la distribution des points de chaque jeu de données (NoiseModelling, NoiseCapture) à l’aide d’un __diagramme de dispersion__
+
+>Le diagramme de dispersion ou de corrélation (ou scatter diagram en anglais) est un outil de contrôle et d'aide à la décision pour vérifier l'existence de corrélation ou d'une relation entre variables de nature quantitative.
+
+```{r , message=FALSE, echo=FALSE, warning=FALSE}
+ggplot(data =AllData_SM,  aes(l400_man,C8-8))+
+geom_point()+
+geom_abline(slope=1, intercept=0)+
+xlab("NoiseCapture [dB]")+
+ylab("NoiseModelling [dB]")+
+ggtitle("NoiseCapture vs NoiseModelling")
+
+```
+
+On peut, en effet, vérifier l’existence de corrélation entre les valeurs de niveau sonore issu de la simulation NoiseModelling et celles qui ont été mesurées avec NoiseCapture
+
+## Corrélations
+Ensuite, nous allons vérifier, à l’aide d’une matrice de corrélation, les coefficients de corrélation Spearman et Pearson pour chaque configuration
+
+> Corrélation: Correlation is a statistic that measures the degree to which two variables move in relation to each other
+
+### Spearman
+> Spearman correlation : Spearman correlation evaluates the monotonic relationship
+
+```{r , message=FALSE, echo=FALSE, warning=FALSE}
+M<-cor(AllData_df_SM, use = "pairwise.complete.obs", method = "spearman")
+p.mat <- cor.mtest(AllData_df_SM)
+# Matrice de p-value de la corrélation
+corrplot(M, method="color",
+         type="upper",
+         addCoef.col = "black", # Ajout du coefficient de corrélation
+         tl.col="black", tl.srt=45, #Rotation des etiquettes de textes
+         # Combiner avec le niveau de significativité
+         p.mat = p.mat, sig.level = 0.05, insig = "blank",
+         # Cacher les coefficients de corrélation sur la diagonale
+         diag=FALSE
+)
+```
+
+### Pearson
+> Pearson correlation : Pearson correlation evaluates the linear relationship between two continuous variables
+
+```{r , message=FALSE, echo=FALSE, warning=FALSE}
+M<-cor(AllData_df_SM, use = "pairwise.complete.obs", method = "pearson")
+p.mat <- cor.mtest(AllData_df_SM)
+# Matrice de p-value de la corrélation
+corrplot(M, method="color",
+         type="upper",
+         addCoef.col = "black", # Ajout du coefficient de corrélation
+         tl.col="black", tl.srt=45, #Rotation des etiquettes de textes
+         # Combiner avec le niveau de significativité
+         p.mat = p.mat, sig.level = 0.05, insig = "blank",
+         # Cacher les coefficients de corrélation sur la diagonale
+         diag=FALSE
+)
+```
+
+# Résultats
+
+## NoiseCapture
+
+Les points de mesure avec NoiseCapture sont affichés dans la figure suivante :
+
+![Points de mesure](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/NoiseCapture.jpg)
+
+## NoiseModelling
+
+Une représentation des niveaux sonores sur une grille de 10000 points espacés de 10 mètres dans la zone d’étude issue du calcul effectué par NoiseModelling est présenté ci-dessous. Si la figure souligne la diminution des niveaux sonores lorsque la distance à la source augmente, il est toutefois notable que les isophones ne sont pas concentriques, ce qui peut remettre en cause l’approche par seuils théoriques généralement utilisée pour caractériser le bruit des sirènes. Les niveaux sonores semblent également impactés par la topographie du site, les bâtiments et les gradients de vent.
+
+![Configuration 8](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/Media/Configs/C8.png)
+
+## Courbes d'audibilité
+
+Nous allons commencer par un découpage des tranches de niveau sonore dans le jeu de données contenant les niveaux sonores et les informations perceptives de l'expérience. Nous utilisons la fonction __Cut_the_ColumName__ définie au début de ce document. Cet encodage est réalisé en fonction des niveaux d'audibilité renseignés par les participants lors de la mesure
+
+```{r , message=FALSE, echo=FALSE, warning=FALSE}
+#Découpage des tranches NS
+groups <- Cut_the_ColumName(mindB = 20,maxdB = 105,binwidth = 10,data=AllData_df_SM,with_quantile = F,nb_slices=5,columName= 'C8')
+AllData_df_SMg <- AllData_df_SM %>% mutate(dbgroup = groups)
+
+Prop_SM <- proportionParSeuil(2,AllData_df_SMg,"Tres faible")
+Prop_SM <- rbind(Prop_SM, proportionParSeuil(3,AllData_df_SMg, "Faible"))
+Prop_SM <- rbind(Prop_SM,proportionParSeuil(4,AllData_df_SMg, "Moyen"))
+Prop_SM <- rbind(Prop_SM,proportionParSeuil(5,AllData_df_SMg, "Fort"))
+Prop_SM <- rbind(Prop_SM,proportionParSeuil(6,AllData_df_SMg, "Tres fort"))
+Prop_SM$AudiSeuil <- as.factor(Prop_SM$AudiSeuil)
+```
+
+Nous pouvons ensuite sortir les courbes d’audibilité pour les niveaux « Très faible », « Faible » et « Moyen »
+
+\* Il n'y a pas assez de données pour produire des courbes « Fort » et « Très fort »
+
+```{r , message=FALSE, echo=FALSE, warning=FALSE}
+plotSt <- ggplot(data = Prop_SM, aes(as.numeric(dbgroup),prop, group = AudiSeuil)) +
+  geom_point(aes(colour=niveauAudibilite),shape = 2, size =5)+
+ # geom_line(data=curves, mapping= aes(x=x, y=value), linetype="dotted")+
+ # geom_text_repel(mapping = aes(label=prop,color=niveauAudibilite))+
+  geom_smooth(mapping= aes(color=niveauAudibilite),method="lm", formula=y ~ log(x) , data=Prop_SM, se = F, linetype = "dashed")+
+  ylim(0,1)+
+  xlim(20,70)+
+  xlab("dB(A)")+
+  ylab("Proportion d'audibilite (%)")+
+  ggtitle("Proportion des gens avec audibilite >= Tres Faible, Faible, Moyen, Fort, Tres Fort [St Martin]")
+plotSt
+```
+
+## Cartographie d'audibilité
+
+Nous obtenons ainsi une représentation cartographique de l'audibilité grâce aux courbes de proportion d'audibilité proposées ci-dessus. En réalisant une mesure de la sirène en parallèle à une simulation sur __NoiseModelling__, nous avons généré une carte de niveaux sonores dans la zone d'étude. Grâce aux informations perceptives renseignées par les étudiants, nous avons evalué l'audibilité de la sirène. Alors, une cartographie de l'audibilité de la sirène peut être réalisée avec cette méthodologie. 
+
+![Cartographie de l'audibilité](C:/Users/siliezar-montoya/Documents/Documentos/Thèse UMRAE/Système d'alerte projet/MainProgram/Rapport/Media/Media/Carto Audib.png)
